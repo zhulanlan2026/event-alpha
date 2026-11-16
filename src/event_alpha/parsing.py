@@ -11,24 +11,29 @@ from event_alpha.sectors import (
     HORIZONS,
     MAGNITUDES,
     SW_INDUSTRIES,
+    canonical_sector_l2,
+    level2_by_parent,
 )
 
 PARSE_PROMPT = """你是量化事件投研分析师。把输入新闻拆成结构化 JSON，供事件 Alpha 候选因子使用。
 规则：
 1. 输出升到赛道。输出里不写公司名，不写证券代码，不写「股份」和「有限公司」。
 2. 只写事件带来的预期差。不写市值、行业贝塔、估值和财报静态比较。
-3. sector 只能取给定的申万一级名单。
-4. event_type 只能是 policy、supply、tech、overseas、macro。
-5. 每个赛道单独给 direction：positive、negative、neutral。
-6. magnitude_bucket 只根据新闻内容判断：weak、mid、strong。
-7. horizon 只能是 short_1_5 或 mid_5_20。
+3. sector 只能取给定的申万一级名单。每个一级单独一条 item。
+4. sector_l2 只有在新闻正文明确写出这一个二级业务时才填写，并且必须属于该一级。没有写明，或同时指向多个二级，填空字符串。不得根据一级猜测二级。
+5. event_type 只能是 policy、supply、tech、overseas、macro。
+6. 每个赛道单独给 direction：positive、negative、neutral。
+7. magnitude_bucket 只根据新闻内容判断：weak、mid、strong。
+8. horizon 只能是 short_1_5 或 mid_5_20。
 输出字段：event_summary，impact_chain，event_type，magnitude_bucket，signal_confidence，has_alpha_potential，items。
-items 的元素为 sector、direction、horizon。只输出 JSON。
+items 的元素为 sector、sector_l2、direction、horizon。只输出 JSON。
 申万一级名单：{sectors}
+申万二级名单，按所属一级分组：
+{level2}
 """
 
 LOGIC_PROMPT = """你根据已经给定的结构化字段写两段中文：factor_logic 和 risk_note。
-不得改写方向、分数、偏离和赛道。不得提出买卖建议，不得预测涨跌。
+不得改写方向、分数、偏离和赛道。sector_l2 为空时不要自行补充二级行业，有值时照抄，不要改成别的二级。不得提出买卖建议，不得预测涨跌。
 risk_note 说明失效条件、拥挤可能，以及调用方提供的新闻前行业走势。
 调用方没有 consensus_surprise 时，不得使用「超预期」三个字。
 只输出 JSON：{"factor_logic": "...", "risk_note": "..."}
@@ -36,14 +41,17 @@ risk_note 说明失效条件、拥挤可能，以及调用方提供的新闻前�
 
 
 def parsed_event_from_dict(payload: dict) -> ParsedEvent:
-    items = [
-        SectorImpact(
-            sector=str(item["sector"]),
-            direction=str(item["direction"]),
-            horizon=str(item["horizon"]),
+    items = []
+    for item in payload.get("items") or []:
+        sector = str(item["sector"])
+        items.append(
+            SectorImpact(
+                sector=sector,
+                direction=str(item["direction"]),
+                horizon=str(item["horizon"]),
+                sector_l2=canonical_sector_l2(sector, item.get("sector_l2")),
+            )
         )
-        for item in payload.get("items") or []
-    ]
     return ParsedEvent(
         event_summary=str(payload.get("event_summary") or ""),
         impact_chain=str(payload.get("impact_chain") or ""),
@@ -151,7 +159,7 @@ class DeepSeekParser:
         self.model = model
 
     def parse(self, content: str) -> ParsedEvent | None:
-        prompt = PARSE_PROMPT.format(sectors="、".join(SW_INDUSTRIES))
+        prompt = PARSE_PROMPT.format(sectors="、".join(SW_INDUSTRIES), level2=level2_by_parent())
         text = self.transport(
             api_key=self.api_key,
             model=self.model,

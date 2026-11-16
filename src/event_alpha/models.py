@@ -22,6 +22,7 @@ class NewsItem:
     title: str
     content: str
     source: str
+    announcement: dict | None = None
 
 
 @dataclass
@@ -29,6 +30,7 @@ class SectorImpact:
     sector: str
     direction: str
     horizon: str
+    sector_l2: str | None = None
 
 
 @dataclass
@@ -70,6 +72,7 @@ class FactorCard:
     impact_chain: str
     event_type: str
     sector: str
+    sector_l2: str | None
     direction: str
     horizon: str
     holding_period: str
@@ -84,8 +87,16 @@ class FactorCard:
     factor_logic: str
     risk_note: str
     factor_expr: str
+    value_rule: str
+    constituents: list
+    constituent_note: str
+    constituent_basis: str
     intensity: float
     signed_score: float
+    valid_until: str
+    is_active: bool
+    announcement: dict | None
+    result_kind: str
     status: str | None
     reject_reason: str | None
 

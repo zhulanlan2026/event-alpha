@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 from event_alpha.auxdata import aux_for_card
+from event_alpha.constituents import FixtureConstituents
+from event_alpha.handoff import VALUE_RULE
 from event_alpha.library import FactorLibrary
 from event_alpha.logic import template_logic
 from event_alpha.models import FactorCard, NewsItem, normalize_text
+from datetime import datetime
 from event_alpha.parsing import enums_ok
 from event_alpha.scoring import score_event
 from event_alpha.screening import screen_card
 from event_alpha.sectors import COMMODITY_SYMBOLS, HORIZON_LABELS
+from event_alpha.validity import validity_window
 
 
 class Pipeline:
-    def __init__(self, parser, aux, library: FactorLibrary, logic_writer=None):
+    def __init__(self, parser, aux, library: FactorLibrary, logic_writer=None, clock=None, constituents=None):
         self.parser = parser
         self.aux = aux
         self.library = library
         self.logic_writer = logic_writer
+        self.clock = clock or datetime.now
+        self.constituents = constituents or FixtureConstituents()
 
     def run(self, news_items: list[NewsItem]) -> list[FactorCard]:
         cards: list[FactorCard] = []
@@ -58,6 +64,7 @@ class Pipeline:
                         "event_summary": parsed.event_summary,
                         "impact_chain": parsed.impact_chain,
                         "sector": item.sector,
+                        "sector_l2": item.sector_l2,
                         "direction": item.direction,
                         "data_note": scored["data_note"],
                         "sector_trend_before_news": context.sector_trend_before_news,
@@ -70,6 +77,7 @@ class Pipeline:
                     summary=parsed.event_summary,
                     chain=parsed.impact_chain,
                     sector=item.sector,
+                    sector_l2=item.sector_l2,
                     direction=item.direction
                     if item.direction in {"positive", "negative", "neutral"}
                     else "neutral",
@@ -81,6 +89,7 @@ class Pipeline:
                 summary=parsed.event_summary,
                 chain=parsed.impact_chain,
                 sector=item.sector,
+                sector_l2=item.sector_l2,
                 direction=item.direction if item.direction in {"positive", "negative", "neutral"} else "neutral",
                 data_note=scored["data_note"],
                 trend=context.sector_trend_before_news,
@@ -114,7 +123,23 @@ class Pipeline:
             quant_checked=quant_checked,
             **flags,
         )
+        until, active = validity_window(news.news_time, item.horizon, self.clock())
+        if reason is None and not active:
+            reason = "expired"
         passed = reason is None
+        if passed:
+            try:
+                constituent_rows, constituent_note, constituent_basis = self.constituents.lookup(
+                    item.sector,
+                    item.sector_l2,
+                    news.news_time.date(),
+                )
+            except Exception:
+                constituent_rows, constituent_note, constituent_basis = [], "missing", ""
+            value_rule = VALUE_RULE
+        else:
+            constituent_rows, constituent_note, constituent_basis = [], "未入库", ""
+            value_rule = ""
         factor_name = f"{parsed.event_type}_{item.sector}_{item.direction}_{news.news_id[:8]}"
         card = FactorCard(
             news_id=news.news_id,
@@ -124,6 +149,7 @@ class Pipeline:
             impact_chain=parsed.impact_chain,
             event_type=parsed.event_type,
             sector=item.sector,
+            sector_l2=item.sector_l2,
             direction=item.direction,
             horizon=item.horizon,
             holding_period=HORIZON_LABELS.get(item.horizon, ""),
@@ -138,8 +164,16 @@ class Pipeline:
             factor_logic=logic,
             risk_note=risk,
             factor_expr=scored["factor_expr"],
+            value_rule=value_rule,
+            constituents=constituent_rows,
+            constituent_note=constituent_note,
+            constituent_basis=constituent_basis,
             intensity=scored["intensity"],
             signed_score=scored["signed_score"],
+            valid_until=until.isoformat(timespec="seconds") if until else "",
+            is_active=active,
+            announcement=news.announcement,
+            result_kind="样例" if news.source == "fixture" else "实时",
             status="pending_verify" if passed else None,
             reject_reason=reason,
         )

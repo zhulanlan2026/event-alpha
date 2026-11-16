@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 
 from event_alpha.models import NewsItem, make_news_id, normalize_text
+from event_alpha.notices import fetch_timed_notices, parse_clock
 
 
 def news_from_cls_row(row: dict) -> NewsItem | None:
@@ -13,6 +14,8 @@ def news_from_cls_row(row: dict) -> NewsItem | None:
     if len(content) < 15:
         return None
     news_time = _cls_time(row.get("发布日期"), row.get("发布时间"))
+    if news_time is None:
+        return None
     return NewsItem(
         news_id=make_news_id("cls_telegraph", news_time, content),
         news_time=news_time,
@@ -29,7 +32,9 @@ def news_from_em_row(row: dict) -> NewsItem | None:
         content = normalize_text(f"{title} {content}")
     if len(content) < 15:
         return None
-    news_time = _parse_clock(str(row.get("发布时间") or ""))
+    news_time = parse_clock(str(row.get("发布时间") or ""))
+    if news_time is None:
+        return None
     return NewsItem(
         news_id=make_news_id("eastmoney_flash", news_time, content),
         news_time=news_time,
@@ -68,41 +73,34 @@ def fetch_eastmoney(limit: int = 20) -> list[NewsItem]:
 
 
 def fetch_live(limit: int = 20) -> list[NewsItem]:
-    """财联社电报优先。失败或为空时改用东财快讯。"""
+    """财联社电报优先，失败时用东财快讯。两类都要有日期和钟点。公告另附带真实发布时间。"""
     try:
         items = fetch_cls(limit)
-        if items:
-            return items
     except Exception:
         items = []
-    return fetch_eastmoney(limit)
+    if not items:
+        try:
+            items = fetch_eastmoney(limit)
+        except Exception:
+            items = []
+    try:
+        items.extend(fetch_timed_notices(limit))
+    except Exception:
+        pass
+    return items
 
 
-def _cls_time(day_value, clock_value) -> datetime:
+def _cls_time(day_value, clock_value) -> datetime | None:
     if isinstance(day_value, datetime):
         day = day_value.date()
     elif isinstance(day_value, date):
         day = day_value
     else:
-        day = date.today()
+        return None
     if isinstance(clock_value, datetime):
         clock = clock_value.time()
     elif isinstance(clock_value, time):
         clock = clock_value
     else:
-        parsed = _parse_clock(str(clock_value or ""))
-        return parsed if day_value in (None, "") else datetime.combine(day, parsed.time())
+        return parse_clock(str(clock_value or ""))
     return datetime.combine(day, clock)
-
-
-def _parse_clock(text: str) -> datetime:
-    text = text.strip()
-    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%H:%M:%S"):
-        try:
-            parsed = datetime.strptime(text, pattern)
-            if pattern == "%H:%M:%S":
-                return datetime.combine(date.today(), parsed.time())
-            return parsed
-        except ValueError:
-            continue
-    return datetime.now().replace(microsecond=0)

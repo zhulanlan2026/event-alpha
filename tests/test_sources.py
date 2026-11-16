@@ -19,6 +19,38 @@ def test_cls_row_combines_date_and_time():
     assert item.news_time == datetime(2026, 11, 16, 9, 30, 0)
 
 
+def test_rows_without_clock_time_are_dropped():
+    assert news_from_em_row({"标题": "只有日期", "摘要": "这条快讯正文已经超过十五个字。", "发布时间": "2026-11-16"}) is None
+    assert news_from_cls_row(
+        {
+            "标题": "行业新闻",
+            "内容": "国家级产业规划明确加大对电力设备的购置补贴。",
+            "发布日期": date(2026, 11, 16),
+            "发布时间": None,
+        }
+    ) is None
+
+
+def test_notice_uses_display_time_not_the_date_column():
+    from event_alpha.notices import news_from_notice_item
+
+    item = news_from_notice_item(
+        {
+            "art_code": "AN001",
+            "display_time": "2026-11-16 16:56:13:315",
+            "notice_date": "2026-11-17 00:00:00",
+            "title": "关于行业供需变化的重大事项公告",
+            "codes": [{"ann_type": "A", "stock_code": "600620", "short_name": "示例"}],
+            "columns": [{"column_name": "重大事项"}],
+        }
+    )
+    assert item is not None
+    assert item.news_time == datetime(2026, 11, 16, 16, 56, 13)
+    assert item.announcement["notice_type"] == "重大事项"
+    assert item.announcement["code"] == "600620"
+    assert news_from_notice_item({"title": "没有钟点", "notice_date": "2026-11-17 00:00:00"}) is None
+
+
 def test_eastmoney_row_keeps_summary():
     item = news_from_em_row(
         {
@@ -35,27 +67,16 @@ def test_eastmoney_row_keeps_summary():
 def test_live_fetch_falls_back_when_primary_fails(monkeypatch):
     import event_alpha.events as events
 
-    monkeypatch.setattr(events, "fetch_cls", lambda limit=20: (_ for _ in ()).throw(RuntimeError("down")))
-    monkeypatch.setattr(
-        events,
-        "fetch_eastmoney",
-        lambda limit=20: news_from_em_row(
-            {
-                "标题": "备源",
-                "摘要": "东财快讯正文长度已经超过十五个字。",
-                "发布时间": "2026-11-16 10:00:00",
-            }
-        )
-        and [
-            news_from_em_row(
-                {
-                    "标题": "备源",
-                    "摘要": "东财快讯正文长度已经超过十五个字。",
-                    "发布时间": "2026-11-16 10:00:00",
-                }
-            )
-        ],
+    backup = news_from_em_row(
+        {
+            "标题": "备源",
+            "摘要": "东财快讯正文长度已经超过十五个字。",
+            "发布时间": "2026-11-16 10:00:00",
+        }
     )
+    monkeypatch.setattr(events, "fetch_cls", lambda limit=20: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(events, "fetch_eastmoney", lambda limit=20: [backup])
+    monkeypatch.setattr(events, "fetch_timed_notices", lambda limit=20: [])
     items = fetch_live()
     assert items[0].source == "eastmoney_flash"
 
@@ -107,4 +128,5 @@ def test_deepseek_json_is_read_without_network():
     event = DeepSeekParser("test-key", transport=transport).parse("任意新闻正文超过十五个字。")
     assert event is not None
     assert event.items[0].sector == "电力设备"
+    assert event.items[0].sector_l2 is None
     assert extract_json(transport())["event_type"] == "policy"

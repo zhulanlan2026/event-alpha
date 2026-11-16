@@ -1,5 +1,6 @@
-import json
+from dataclasses import replace
 from datetime import datetime
+import json
 
 import pytest
 
@@ -21,11 +22,15 @@ def run(tmp_path):
 def test_four_fixtures_follow_the_revision(tmp_path):
     cards, library = run(tmp_path)
     assert [card.sector for card in cards] == ["电力设备", "有色金属", "综合", "机械设备"]
+    assert [card.sector_l2 for card in cards] == [None, None, None, None]
 
     policy, supply, noise, macro = cards
     assert policy.status == "pending_verify"
     assert policy.signed_score == pytest.approx(0.72)
     assert policy.data_note == "qualitative_only"
+    assert policy.news_time == "2026-11-16T09:00:00"
+    assert policy.valid_until == "2026-12-06T09:00:00"
+    assert policy.result_kind == "样例"
     assert policy.consensus_surprise is None
     assert "超预期" not in policy.factor_logic + policy.risk_note
 
@@ -53,6 +58,20 @@ def test_four_fixtures_follow_the_revision(tmp_path):
     assert len(stored) == 3
     assert "reject_reason" not in stored[0]
     assert library.candidate_count() == 3
+
+
+def test_expired_card_is_not_stored(tmp_path):
+    library = FactorLibrary(tmp_path)
+    pipeline = Pipeline(
+        FixtureParser(),
+        FixtureAux(),
+        library,
+        clock=lambda: datetime(2027, 1, 1, 0, 0, 0),
+    )
+    cards = pipeline.run(fixture_news_items())
+    assert cards
+    assert {card.reject_reason for card in cards} == {"expired", "no_alpha"}
+    assert library.candidate_count() == 0
 
 
 def test_second_run_does_not_append_again(tmp_path):
@@ -93,6 +112,23 @@ def test_short_text_is_dropped(tmp_path):
     )
     cards = Pipeline(FixtureParser(), FixtureAux(), FactorLibrary(tmp_path)).run([news])
     assert cards == []
+
+
+def test_explicit_level_two_is_written_on_the_card(tmp_path):
+    content = "国家级产业规划明确加大对电力设备的购置补贴。"
+    news = next(item for item in fixture_news_items() if item.content == content)
+    source = FIXTURE_EVENTS[content]
+
+    class Parser:
+        def parse(self, _content):
+            return replace(source, items=[replace(source.items[0], sector_l2="光伏设备")])
+
+    cards = Pipeline(Parser(), FixtureAux(), FactorLibrary(tmp_path)).run([news])
+    assert cards[0].sector == "电力设备"
+    assert cards[0].sector_l2 == "光伏设备"
+    assert "二级为光伏设备" in cards[0].factor_logic
+    stored = json.loads((tmp_path / "candidates.jsonl").read_text(encoding="utf-8"))
+    assert stored["sector_l2"] == "光伏设备"
 
 
 def test_sector_list_is_the_shenwan_level_one_set():

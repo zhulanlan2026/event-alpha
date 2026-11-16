@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from event_alpha.handoff import factor_record
 from event_alpha.models import FactorCard
 
 
@@ -31,6 +32,10 @@ class FactorLibrary:
 
     def append_candidate(self, card: FactorCard) -> None:
         self._append(self.candidates_path, card.to_public_dict())
+        factor_dir = self.directory / "factors"
+        factor_dir.mkdir(parents=True, exist_ok=True)
+        path = factor_dir / f"{card.factor_name}.json"
+        path.write_text(json.dumps(factor_record(card), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def mark_card(self, news_id: str, sector: str, reject_reason: str | None, factor_name: str) -> None:
         self._append(
